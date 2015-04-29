@@ -2,7 +2,7 @@
 
 ![http://optiboot.googlecode.com/files/optiboot.png](http://optiboot.googlecode.com/files/optiboot.png)
 
-# Added changes to preserve most reset flags stored in MCUSR - only the Watchdog Reset flag is cleared. #
+### Added changes to preserve most reset flags stored in MCUSR - only the Watchdog Reset flag is cleared. ###
 
 Even though the Watchdog Reset flag is cleared by the boot loader, user code can still detect a Watchdog Reset - if MCUSR is completely cleared, then the reset was due to the Watchdog!
 

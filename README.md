@@ -2,6 +2,20 @@
 
 ![http://optiboot.googlecode.com/files/optiboot.png](http://optiboot.googlecode.com/files/optiboot.png)
 
+# Added changes to preserve most reset flags stored in MCUSR - only the Watchdog Reset flag is cleared. #
+
+Even though the Watchdog Reset flag is cleared by the boot loader, user code can still detect a Watchdog Reset - if MCUSR is completely cleared, then the reset was due to the Watchdog!
+
+Although the previous code stored the reset flags in r2, there was no way for the user code to distinguish between an external reset and a watchdog reset!  It also required extra code and an extra byte of RAM in the user sketch.
+
+Additional changes made to allow user code to jump straight to the boot loader - boot loader will then wait a full 8 seconds before timing out and starting the user code.  This is useful in cases where a design has DTR disconnected from the reset pin, but still allows for firmware updates by triggering the bootloader in user code.
+
+An additional advantage with these changes is that when uploading the boot loader to the chip with an In System Programmer, the boot loader will effectively run continuously afterwards until the board is either powered off, or firmware is uploaded to the chip - perfect for cases where DTR isn't connected to the reset pin!
+
+Would be good to see my modified no wait mod included in the original Optiboot repository!
+
+
+
 Optiboot is an easy to install upgrade to the Arduino bootloader within Arduino boards. It provides the following features:
 
   * Allows larger sketches. Optiboot is a quarter of the size of the default bootloader, freeing 1.5k of extra space.

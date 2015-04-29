@@ -66,10 +66,6 @@
 /*   Adaboot               http://www.ladyada.net/library/arduino/bootloader.html */
 /*   AVR305                Atmel Application Note         */
 /*                                                        */
-
-/* Copyright 2013-2015 by Bill Westfield.                 */
-/* Copyright 2010 by Peter Knight.                        */
-/*                                                        */
 /* This program is free software; you can redistribute it */
 /* and/or modify it under the terms of the GNU General    */
 /* Public License as published by the Free Software       */
@@ -389,33 +385,18 @@ void appStart(uint8_t rstFlags) __attribute__ ((naked));
 /* This allows us to drop the zero init code, saving us memory */
 #define buff    ((uint8_t*)(RAMSTART))
 #ifdef VIRTUAL_BOOT_PARTITION
-#define rstVect0_sav (*(uint8_t*)(RAMSTART+SPM_PAGESIZE*2+4))
-#define rstVect1_sav (*(uint8_t*)(RAMSTART+SPM_PAGESIZE*2+5))
-#define wdtVect0_sav (*(uint8_t*)(RAMSTART+SPM_PAGESIZE*2+6))
-#define wdtVect1_sav (*(uint8_t*)(RAMSTART+SPM_PAGESIZE*2+7))
-#if FLASHEND > 8192
-// AVRs with more than 8k of flash have 4-byte vectors, and use jmp.
-#define rstVect0 2
-#define rstVect1 3
-#define wdtVect0 (WDT_vect_num*4+2)
-#define wdtVect1 (WDT_vect_num*4+3)
-#define appstart_vec (WDT_vect_num*2)
-#else
-// AVRs with up to 8k of flash have 2-byte vectors, and use rjmp.
-#define rstVect0 0
-#define rstVect1 1
-#define wdtVect0 (WDT_vect_num*2)
-#define wdtVect1 (WDT_vect_num*2+1)
-#define appstart_vec (WDT_vect_num)
+#define rstVect (*(uint16_t*)(RAMSTART+SPM_PAGESIZE*2+4))
+#define wdtVect (*(uint16_t*)(RAMSTART+SPM_PAGESIZE*2+6))
 #endif
-#else
-#define appstart_vec (0)
-#endif // VIRTUAL_BOOT_PARTITION
+
+#define cli() __asm__ __volatile__ ("cli");
 
 
 /* main program starts here */
 int main(void) {
   uint8_t ch;
+  uint8_t WaitTime = WATCHDOG_1S;  // Set watchdog to trigger after 1 second by default - value set to the watchdog later!
+
 
   /*
    * Making these local and in registers prevents the need for initializing
@@ -434,11 +415,13 @@ int main(void) {
   //  r1 contains zero
   //
   // If not, uncomment the following instructions:
-  // cli();
+
+  // Following lines enabled by Mark Griffiths to allow jumping directly to the boot loader from user code.
+  cli();
   asm volatile ("clr __zero_reg__");
-#if defined(__AVR_ATmega8__) || defined (__AVR_ATmega32__)
+//#if defined(__AVR_ATmega8__) || defined (__AVR_ATmega32__)
   SP=RAMEND;  // This is done by hardware reset
-#endif
+//#endif
 
   /*
    * modified Adaboot no-wait mod.
@@ -446,10 +429,31 @@ int main(void) {
    * can leave multiple reset flags set; we only want the bootloader to
    * run on an 'external reset only' status
    */
+//  ch = MCUSR;
+//  MCUSR = 0;
+//  if (ch & (_BV(WDRF) | _BV(BORF) | _BV(PORF)))
+//      appStart(ch);
+
+  // Modified no wait mod by Mark Griffiths 8th of April 2015
+  // This modification allows the majority of the reset flags to be kept 
+  // unmodified in the MCUSR register for use by user sketches!
+
+  // Previous method saved the MCUSR data in r2, but because it cleared 
+  // MCUSR before attempting to update the flash memory, there was no way
+  // for user code to distinguish between an external reset and a watchdog 
+  // reset.  It also required extra code and an extra byte of RAM in the 
+  // user sketch.
+
   ch = MCUSR;
-  MCUSR = 0;
-  if (ch & (_BV(WDRF) | _BV(BORF) | _BV(PORF)))
-      appStart(ch);
+
+  if (ch == 0) {
+      WaitTime = WATCHDOG_8S;   // If no Reset Flags are set, it must mean that the user code jumped to the boot loader!  Wait 8 seconds for the firmware to be updated!
+  } else {
+      if ((ch & (_BV(WDRF) | _BV(EXTRF))) != _BV(EXTRF)) {    // To run the boot loader, External Reset Flag must be set and the Watchdog Flag MUST be cleared!  Otherwise jump straight to user code.
+          MCUSR = ~(_BV(WDRF));
+          appStart(ch);
+      }
+  }
 
 #if LED_START_FLASHES > 0
   // Set up Timer 1 for timeout counter
@@ -470,8 +474,8 @@ int main(void) {
 #endif
 #endif
 
-  // Set up watchdog to trigger after 1s
-  watchdogConfig(WATCHDOG_1S);
+  
+  watchdogConfig(WaitTime);
 
 #if (LED_START_FLASHES > 0) || defined(LED_DATA_FLASH)
   /* Set LED pin as output */
@@ -558,56 +562,23 @@ int main(void) {
       verifySpace();
 
 #ifdef VIRTUAL_BOOT_PARTITION
-#if FLASHEND > 8192
-/*
- * AVR with 4-byte ISR Vectors and "jmp"
- */
-      if (address == 0) {
-	// This is the reset vector page. We need to live-patch the
-	// code so the bootloader runs first.
-	//
-	// Save jmp targets (for "Verify")
-	rstVect0_sav = buff[rstVect0];
-	rstVect1_sav = buff[rstVect1];
-	wdtVect0_sav = buff[wdtVect0];
-	wdtVect1_sav = buff[wdtVect1];
-
-        // Move RESET jmp target to WDT vector
-        buff[wdtVect0] = rstVect0_sav;
-        buff[wdtVect1] = rstVect1_sav;
-
-        // Add jump to bootloader at RESET vector
-        buff[rstVect0] = ((uint16_t)main) & 0xFF;
-        buff[rstVect1] = ((uint16_t)main) >> 8;
-      }
-
-#else
-/*
- * AVR with 2-byte ISR Vectors and rjmp
- */
-      if ((uint16_t)(void*)address == rstVect0) {
-        // This is the reset vector page. We need to live-patch
-        // the code so the bootloader runs first.
+      if ((uint16_t)(void*)address == 0) {
+        // This is the reset vector page. We need to live-patch the code so the
+        // bootloader runs.
         //
         // Move RESET vector to WDT vector
-	// Save jmp targets (for "Verify")
-	rstVect0_sav = buff[rstVect0];
-	rstVect1_sav = buff[rstVect1];
-	wdtVect0_sav = buff[wdtVect0];
-	wdtVect1_sav = buff[wdtVect1];
+        uint16_t vect = buff[0] | (buff[1]<<8);
+        rstVect = vect;
+        wdtVect = buff[8] | (buff[9]<<8);
+        vect -= 4; // Instruction is a relative jump (rjmp), so recalculate.
+        buff[8] = vect & 0xff;
+        buff[9] = vect >> 8;
 
-	// Instruction is a relative jump (rjmp), so recalculate.
-	uint16_t vect=rstVect0_sav+(rstVect1_sav<<8);
-        vect -= WDT_vect_num;
-        // Move RESET jmp target to WDT vector
-        buff[wdtVect0] = vect & 0xff;
-        buff[wdtVect1] = vect >> 8;
-        // Add rjump to bootloader at RESET vector
-        buff[0] = (((uint16_t)main) & 0xFFF) & 0xFF; // rjmp 0x1d00 instruction
-	buff[1] =  ((((uint16_t)main) & 0xFFF) >> 8) | 0xC0;
+        // Add jump to bootloader at RESET vector
+        buff[0] = 0x7f;
+        buff[1] = 0xce; // rjmp 0x1d00 instruction
       }
-#endif // FLASHEND
-#endif // VBP
+#endif
 
       writebuffer(desttype, buff, address, savelength);
 
@@ -621,7 +592,7 @@ int main(void) {
       desttype = getch();
 
       verifySpace();
-
+	  
       read_mem(desttype, address, length);
     }
 
@@ -725,7 +696,7 @@ uint8_t getch(void) {
        */
     watchdogReset();
   }
-
+  
   ch = UART_UDR;
 #endif
 
@@ -808,13 +779,17 @@ void appStart(uint8_t rstFlags) {
   __asm__ __volatile__ ("mov r2, %0\n" :: "r" (rstFlags));
 
   watchdogConfig(WATCHDOG_OFF);
-  // Note that appstart_vec is defined so that this works with either
-  // real or virtual boot partitions.
   __asm__ __volatile__ (
-    // Jump to WDT or RST vector
-    "ldi r30,%[rstvec]\n"
+#ifdef VIRTUAL_BOOT_PARTITION
+    // Jump to WDT vector
+    "ldi r30,4\n"
     "clr r31\n"
-    "ijmp\n"::[rstvec] "M"(appstart_vec)
+#else
+    // Jump to RST vector
+    "clr r30\n"
+    "clr r31\n"
+#endif
+    "ijmp\n"
   );
 }
 
@@ -902,10 +877,10 @@ static inline void read_mem(uint8_t memtype, uint16_t address, pagelen_t length)
 	do {
 #ifdef VIRTUAL_BOOT_PARTITION
         // Undo vector patch in bottom page so verify passes
-	    if (address == rstVect0) ch = rstVect0_sav;
-	    else if (address == rstVect1) ch = rstVect1_sav;
-	    else if (address == wdtVect0) ch = wdtVect0_sav;
-	    else if (address == wdtVect1) ch = wdtVect1_sav;
+	    if (address == 0)       ch=rstVect & 0xff;
+	    else if (address == 1)  ch=rstVect >> 8;
+	    else if (address == 8)  ch=wdtVect & 0xff;
+	    else if (address == 9) ch=wdtVect >> 8;
 	    else ch = pgm_read_byte_near(address);
 	    address++;
 #elif defined(RAMPZ)
